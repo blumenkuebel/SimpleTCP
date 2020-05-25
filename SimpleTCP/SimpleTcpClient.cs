@@ -3,232 +3,245 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net.Sockets;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace SimpleTCP
 {
-	public class SimpleTcpClient : IDisposable
-	{
-		public SimpleTcpClient()
-		{
-			StringEncoder = System.Text.Encoding.UTF8;
-			ReadLoopIntervalMs = 10;
-			Delimiter = 0x13;
-		}
+    public class SimpleTcpClient : IDisposable
+    {
+        public SimpleTcpClient()
+        {
+            StringEncoder = System.Text.Encoding.UTF8;
+            ReadLoopIntervalMs = 10;
+            Delimiter = 0x13;
+        }
 
-		private Thread _rxThread = null;
-		private List<byte> _queuedMsg = new List<byte>();
-		public byte Delimiter { get; set; }
-		public System.Text.Encoding StringEncoder { get; set; }
-		private TcpClient _client = null;
+        private Thread _rxThread = null;
 
-		public event EventHandler<Message> DelimiterDataReceived;
-		public event EventHandler<Message> DataReceived;
+        private List<byte> _queuedMsg = new List<byte>();
 
-		internal bool QueueStop { get; set; }
-		internal int ReadLoopIntervalMs { get; set; }
-		public bool AutoTrimStrings { get; set; }
+        private string _hostNameOrIpAddress { get; set; }
 
-		public SimpleTcpClient Connect(string hostNameOrIpAddress, int port)
-		{
-			if (string.IsNullOrEmpty(hostNameOrIpAddress))
-			{
-				throw new ArgumentNullException("hostNameOrIpAddress");
-			}
+        private int _port { get; set; }
 
-			_client = new TcpClient();
-			_client.Connect(hostNameOrIpAddress, port);
+        public byte Delimiter { get; set; }
 
-			StartRxThread();
+        public System.Text.Encoding StringEncoder { get; set; }
 
-			return this;
-		}
+        private TcpClient _client = null;
 
-		private void StartRxThread()
-		{
-			if (_rxThread != null) { return; }
+        public event EventHandler<Message> DelimiterDataReceived;
 
-			_rxThread = new Thread(ListenerLoop);
-			_rxThread.IsBackground = true;
-			_rxThread.Start();
-		}
+        public event EventHandler<Message> DataReceived;
 
-		public SimpleTcpClient Disconnect()
-		{
-			if (_client == null) { return this; }
-			_client.Close();
-			_client = null;
-			return this;
-		}
+        internal bool QueueStop { get; set; }
+        internal int ReadLoopIntervalMs { get; set; }
+        public bool AutoTrimStrings { get; set; }
 
-		public TcpClient TcpClient { get { return _client; } }
+        public SimpleTcpClient Connect(string hostNameOrIpAddress, int port)
+        {
+            if (string.IsNullOrEmpty(hostNameOrIpAddress))
+            {
+                throw new ArgumentNullException("hostNameOrIpAddress");
+            }
 
-		private void ListenerLoop(object state)
-		{
-			while (!QueueStop)
-			{
-				try
-				{
-					RunLoopStep();
-				}
-				catch
-				{
+            _hostNameOrIpAddress = hostNameOrIpAddress;
+            _port = port;
 
-				}
+            _client = new TcpClient();
+            _client.Connect(_hostNameOrIpAddress, _port);
 
-				System.Threading.Thread.Sleep(ReadLoopIntervalMs);
-			}
+            StartRxThread();
 
-			_rxThread = null;
-		}
+            return this;
+        }
 
-		private void RunLoopStep()
-		{
-			if (_client == null) { return; }
-			if (_client.Connected == false) { return; }
+        private void StartRxThread()
+        {
+            if (_rxThread != null) { return; }
 
-			var delimiter = this.Delimiter;
-			var c = _client;
+            _rxThread = new Thread(ListenerLoop);
+            _rxThread.IsBackground = true;
+            _rxThread.Start();
+        }
 
-			int bytesAvailable = c.Available;
-			if (bytesAvailable == 0)
-			{
-				System.Threading.Thread.Sleep(10);
-				return;
-			}
+        public SimpleTcpClient Disconnect()
+        {
+            if (_client == null) { return this; }
+            _client.Close();
+            _client = null;
+            return this;
+        }
 
-			List<byte> bytesReceived = new List<byte>();
+        public TcpClient TcpClient { get { return _client; } }
 
-			while (c.Available > 0 && c.Connected)
-			{
-				byte[] nextByte = new byte[1];
-				c.Client.Receive(nextByte, 0, 1, SocketFlags.None);
-				bytesReceived.AddRange(nextByte);
-				if (nextByte[0] == delimiter)
-				{
-					byte[] msg = _queuedMsg.ToArray();
-					_queuedMsg.Clear();
-					NotifyDelimiterMessageRx(c, msg);
-				}
-				else
-				{
-					_queuedMsg.AddRange(nextByte);
-				}
-			}
+        private void ListenerLoop(object state)
+        {
+            while (!QueueStop)
+            {
+                try
+                {
+                    RunLoopStep();
+                }
+                catch
+                {
+                }
 
-			if (bytesReceived.Count > 0)
-			{
-				NotifyEndTransmissionRx(c, bytesReceived.ToArray());
-			}
-		}
+                System.Threading.Thread.Sleep(ReadLoopIntervalMs);
+            }
 
-		private void NotifyDelimiterMessageRx(TcpClient client, byte[] msg)
-		{
-			if (DelimiterDataReceived != null)
-			{
-				Message m = new Message(msg, client, StringEncoder, Delimiter, AutoTrimStrings);
-				DelimiterDataReceived(this, m);
-			}
-		}
+            _rxThread = null;
+        }
 
-		private void NotifyEndTransmissionRx(TcpClient client, byte[] msg)
-		{
-			if (DataReceived != null)
-			{
-				Message m = new Message(msg, client, StringEncoder, Delimiter, AutoTrimStrings);
-				DataReceived(this, m);
-			}
-		}
+        private void RunLoopStep()
+        {
+            if (_client == null) { return; }
+            if (_client.Connected == false)
+            {
+                _client.Connect(_hostNameOrIpAddress, _port);
+                return;
+            }
 
-		public void Write(byte[] data)
-		{
-			if (_client == null) { throw new Exception("Cannot send data to a null TcpClient (check to see if Connect was called)"); }
-			_client.GetStream().Write(data, 0, data.Length);
-		}
+            var delimiter = this.Delimiter;
+            var c = _client;
 
-		public void Write(string data)
-		{
-			if (data == null) { return; }
-			Write(StringEncoder.GetBytes(data));
-		}
+            int bytesAvailable = c.Available;
+            if (bytesAvailable == 0)
+            {
+                System.Threading.Thread.Sleep(10);
+                return;
+            }
 
-		public void WriteLine(string data)
-		{
-			if (string.IsNullOrEmpty(data)) { return; }
-			if (data.LastOrDefault() != Delimiter)
-			{
-				Write(data + StringEncoder.GetString(new byte[] { Delimiter }));
-			}
-			else
-			{
-				Write(data);
-			}
-		}
+            List<byte> bytesReceived = new List<byte>();
 
-		public Message WriteLineAndGetReply(string data, TimeSpan timeout)
-		{
-			Message mReply = null;
-			this.DataReceived += (s, e) => { mReply = e; };
-			WriteLine(data);
+            while (c.Available > 0 && c.Connected)
+            {
+                byte[] nextByte = new byte[1];
+                c.Client.Receive(nextByte, 0, 1, SocketFlags.None);
+                bytesReceived.AddRange(nextByte);
+                if (nextByte[0] == delimiter)
+                {
+                    byte[] msg = _queuedMsg.ToArray();
+                    _queuedMsg.Clear();
+                    NotifyDelimiterMessageRx(c, msg);
+                }
+                else
+                {
+                    _queuedMsg.AddRange(nextByte);
+                }
+            }
 
-			Stopwatch sw = new Stopwatch();
-			sw.Start();
+            if (bytesReceived.Count > 0)
+            {
+                NotifyEndTransmissionRx(c, bytesReceived.ToArray());
+            }
+        }
 
-			while (mReply == null && sw.Elapsed < timeout)
-			{
-				System.Threading.Thread.Sleep(10);
-			}
+        private void NotifyDelimiterMessageRx(TcpClient client, byte[] msg)
+        {
+            if (DelimiterDataReceived != null)
+            {
+                Message m = new Message(msg, client, StringEncoder, Delimiter, AutoTrimStrings);
+                DelimiterDataReceived(this, m);
+            }
+        }
 
-			return mReply;
-		}
+        private void NotifyEndTransmissionRx(TcpClient client, byte[] msg)
+        {
+            if (DataReceived != null)
+            {
+                Message m = new Message(msg, client, StringEncoder, Delimiter, AutoTrimStrings);
+                DataReceived(this, m);
+            }
+        }
 
+        public void Write(byte[] data)
+        {
+            if (_client == null) { throw new Exception("Cannot send data to a null TcpClient (check to see if Connect was called)"); }
+            _client.GetStream().Write(data, 0, data.Length);
+        }
 
-		#region IDisposable Support
-		private bool disposedValue = false; // To detect redundant calls
+        public void Write(string data)
+        {
+            if (data == null) { return; }
+            Write(StringEncoder.GetBytes(data));
+        }
 
-		protected virtual void Dispose(bool disposing)
-		{
-			if (!disposedValue)
-			{
-				if (disposing)
-				{
-					// TODO: dispose managed state (managed objects).
+        public void WriteLine(string data)
+        {
+            if (string.IsNullOrEmpty(data)) { return; }
+            if (data.LastOrDefault() != Delimiter)
+            {
+                Write(data + StringEncoder.GetString(new byte[] { Delimiter }));
+            }
+            else
+            {
+                Write(data);
+            }
+        }
 
-				}
+        public Message WriteLineAndGetReply(string data, TimeSpan timeout)
+        {
+            Message mReply = null;
+            this.DataReceived += (s, e) => { mReply = e; };
+            WriteLine(data);
 
-				// TODO: free unmanaged resources (unmanaged objects) and override a finalizer below.
-				// TODO: set large fields to null.
-				QueueStop = true;
-				if (_client != null)
-				{
-					try
-					{
-						_client.Close();
-					}
-					catch { }
-					_client = null;
-				}
+            Stopwatch sw = new Stopwatch();
+            sw.Start();
 
-				disposedValue = true;
-			}
-		}
+            while (mReply == null && sw.Elapsed < timeout)
+            {
+                System.Threading.Thread.Sleep(10);
+            }
 
-		// TODO: override a finalizer only if Dispose(bool disposing) above has code to free unmanaged resources.
-		// ~SimpleTcpClient() {
-		//   // Do not change this code. Put cleanup code in Dispose(bool disposing) above.
-		//   Dispose(false);
-		// }
+            return mReply;
+        }
 
-		// This code added to correctly implement the disposable pattern.
-		public void Dispose()
-		{
-			// Do not change this code. Put cleanup code in Dispose(bool disposing) above.
-			Dispose(true);
-			// TODO: uncomment the following line if the finalizer is overridden above.
-			// GC.SuppressFinalize(this);
-		}
-		#endregion
-	}
+        #region IDisposable Support
+
+        private bool disposedValue = false; // To detect redundant calls
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposedValue)
+            {
+                if (disposing)
+                {
+                    // TODO: dispose managed state (managed objects).
+                }
+
+                // TODO: free unmanaged resources (unmanaged objects) and override a finalizer below.
+                // TODO: set large fields to null.
+                QueueStop = true;
+                if (_client != null)
+                {
+                    try
+                    {
+                        _client.Close();
+                    }
+                    catch { }
+                    _client = null;
+                }
+
+                disposedValue = true;
+            }
+        }
+
+        // TODO: override a finalizer only if Dispose(bool disposing) above has code to free unmanaged resources.
+        // ~SimpleTcpClient() {
+        //   // Do not change this code. Put cleanup code in Dispose(bool disposing) above.
+        //   Dispose(false);
+        // }
+
+        // This code added to correctly implement the disposable pattern.
+        public void Dispose()
+        {
+            // Do not change this code. Put cleanup code in Dispose(bool disposing) above.
+            Dispose(true);
+            // TODO: uncomment the following line if the finalizer is overridden above.
+            // GC.SuppressFinalize(this);
+        }
+
+        #endregion IDisposable Support
+    }
 }
